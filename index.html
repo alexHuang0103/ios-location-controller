@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>iOS GPS 定位控制台</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    :root{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:#182331;background:#f4f6fa}
+    *{box-sizing:border-box}body{margin:0;padding:24px 16px}.wrap{max-width:760px;margin:auto}
+    h1{font-size:28px;margin:0 0 9px}.muted{color:#66758a;font-size:14px;line-height:1.7}
+    .panel{background:white;padding:20px;border-radius:17px;border:1px solid #e3e7ee;box-shadow:0 4px 20px #1c2d4010;margin-top:14px}
+    label{display:block;font-weight:600;margin:15px 0 6px;font-size:14px}
+    input{padding:12px;border:1px solid #cdd6e0;border-radius:9px;font-size:16px;width:100%;background:white}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+    button{font:inherit;cursor:pointer;padding:12px 16px;border-radius:9px;border:1px solid #cdd6e0;background:white;font-weight:600}
+    button.primary{background:#1967d2;border-color:#1967d2;color:white}button:disabled{opacity:.5;cursor:wait}
+    #map{width:100%;height:auto;aspect-ratio:16 / 9;margin-top:14px;border:1px solid #cdd6e0;border-radius:9px;background:#e9eef3}
+    #map-note{margin:8px 0 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;border-radius:9px;padding:14px;font-size:12px;max-height:280px;overflow:auto}
+    [hidden]{display:none!important}.mode-switch{display:flex;gap:6px;padding:5px;border-radius:11px;background:#eef2f7;margin-bottom:16px}
+    .mode-switch button{flex:1;border:0;background:transparent;padding:10px}.mode-switch button.active{background:white;color:#1967d2;box-shadow:0 1px 5px #1c2d4020}
+    .route-points{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.route-point{border:1px solid #d9e1eb;border-radius:10px;padding:10px;min-width:0}
+    .route-point strong{display:block;margin:5px 0 10px;font-size:14px;overflow-wrap:anywhere}.route-point button{padding:8px 12px;font-size:13px}
+    .route-info{margin:12px 0 0;color:#496077;font-size:14px;line-height:1.6}
+    details.more{margin-top:18px;color:#637287;font-size:14px}details.more summary{cursor:pointer}details.more .actions{margin-top:12px}
+    #status{font-weight:650;margin:18px 0 8px}.small{font-size:13px;color:#637287}
+    @media(max-width:450px){.grid{grid-template-columns:1fr}.panel{padding:16px}.route-points{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <h1>📍 iOS GPS 定位控制台</h1>
+  <p class="muted">用地圖或經緯度設定 iPad / iPhone 的模擬位置。</p>
+  <section class="panel">
+    <div class="mode-switch" role="tablist" aria-label="定位模式">
+      <button id="singleTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="singleMode">單點定位</button>
+      <button id="routeTab" type="button" role="tab" aria-selected="false" aria-controls="routeMode">移動路徑</button>
+    </div>
+    <div id="singleMode" class="grid" role="tabpanel">
+      <div><label for="lat">緯度（Latitude）</label><input id="lat" type="number" step="any" min="-90" max="90" placeholder="例如 25.0330"></div>
+      <div><label for="lon">經度（Longitude）</label><input id="lon" type="number" step="any" min="-180" max="180" placeholder="例如 121.5654"></div>
+    </div>
+    <div id="map" role="region" aria-label="選擇定位的地圖"></div>
+    <p id="map-note" class="small">點地圖選位置，或在上方輸入座標。</p>
+    <div id="singleActions" class="actions"><button class="primary" id="set">設定定位</button><button data-action="clear">恢復真實定位</button></div>
+    <div id="routeMode" role="tabpanel" hidden>
+      <div class="route-points">
+        <div class="route-point"><span class="small">🟢 起點</span><strong id="startLabel">尚未選擇</strong><button id="pickStart" type="button">選起點</button></div>
+        <div class="route-point"><span class="small">🔴 終點</span><strong id="endLabel">尚未選擇</strong><button id="pickEnd" type="button">選終點</button></div>
+      </div>
+      <p id="routeInfo" class="route-info">依序點地圖選起點、終點 · 直線約 20 km/h · 最長 200 公里</p>
+      <div class="actions"><button class="primary" data-action="move">開始移動</button><button data-action="stop_move">停止移動</button><button data-action="clear">恢復真實定位</button></div>
+      <p id="routeProgress" class="route-info" role="status" aria-live="polite">目前沒有移動中的路線。</p>
+    </div>
+    <div id="status" role="status" aria-live="polite">尚未操作</div>
+    <pre id="result">先連接並解鎖 iPhone／iPad，確認已信任這部電腦。</pre>
+    <details class="more"><summary>更多操作與說明</summary>
+      <div class="actions"><button data-action="devices">檢查 USB 裝置</button><button data-action="shutdown">關閉控制台</button></div>
+      <p class="small">設定定位期間請保留控制台執行。若其他終端機仍在執行定位指令，請先在那裡按 Enter 結束。地圖底圖需要網路；定位指令只送到本機服務。</p>
+    </details>
+  </section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  const lat = document.getElementById('lat');
+  const lon = document.getElementById('lon');
+  const status = document.getElementById('status');
+  const result = document.getElementById('result');
+  const mapNote = document.getElementById('map-note');
+  const routeInfo = document.getElementById('routeInfo');
+  const routeProgress = document.getElementById('routeProgress');
+  const singleTab = document.getElementById('singleTab');
+  const routeTab = document.getElementById('routeTab');
+  const routePoints = {start: null, end: null};
+  let mode = 'single';
+
+  function coordinates() {
+    if (lat.value.trim() === '' || lon.value.trim() === '') return null;
+    const latitude = Number(lat.value), longitude = Number(lon.value);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null;
+    return [latitude, longitude];
+  }
+
+  function routePoint(which) {
+    return routePoints[which];
+  }
+
+  function routeDistanceKm(start, end) {
+    const radians = degrees => degrees * Math.PI / 180;
+    const deltaLat = radians(end[0] - start[0]), deltaLon = radians(end[1] - start[1]);
+    const lat1 = radians(start[0]), lat2 = radians(end[0]);
+    const h = Math.sin(deltaLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLon / 2) ** 2;
+    return 12742 * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  let map, marker, routeLine, startMarker, endMarker, movingMarker, pickMode = null;
+  if (window.L) {
+    map = L.map('map').setView([23.7, 121], 7);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+    map.on('click', (event) => {
+      if (mode === 'move') {
+        const which = pickMode || (!routePoints.start ? 'start' : !routePoints.end ? 'end' : null);
+        if (!which) return;
+        routePoints[which] = [Number(event.latlng.lat.toFixed(6)), Number(event.latlng.lng.toFixed(6))];
+        pickMode = which === 'start' ? 'end' : null;
+        mapNote.textContent = pickMode === 'end' ? '已選起點，請點地圖選終點。' : '可按「選起點／選終點」重新選擇。';
+        updateRoutePreview();
+        return;
+      }
+      lat.value = event.latlng.lat.toFixed(6);
+      lon.value = event.latlng.lng.toFixed(6);
+      updateMarker(false);
+    });
+  } else {
+    mapNote.textContent = '地圖無法載入，請檢查網路連線；仍可直接輸入經緯度設定定位。';
+  }
+
+  function updateRoutePreview() {
+    const start = routePoint('start'), end = routePoint('end');
+    document.getElementById('startLabel').textContent = start ? `${start[0]}, ${start[1]}` : '尚未選擇';
+    document.getElementById('endLabel').textContent = end ? `${end[0]}, ${end[1]}` : '尚未選擇';
+    if (map && mode === 'move') {
+      if (start) {
+        if (startMarker) startMarker.setLatLng(start);
+        else startMarker = L.circleMarker(start, {radius: 8, color: '#168444', fillOpacity: 1}).addTo(map);
+      } else if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
+      if (end) {
+        if (endMarker) endMarker.setLatLng(end);
+        else endMarker = L.circleMarker(end, {radius: 8, color: '#c73737', fillOpacity: 1}).addTo(map);
+      } else if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
+      if (start && end) {
+        if (routeLine) routeLine.setLatLngs([start, end]);
+        else routeLine = L.polyline([start, end], {color: '#3268d5', weight: 4, dashArray: '8 6'}).addTo(map);
+        map.fitBounds(routeLine.getBounds(), {padding: [30, 30], maxZoom: 15});
+      } else if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    } else if (map) {
+      for (const layer of [startMarker, endMarker, routeLine, movingMarker]) if (layer) map.removeLayer(layer);
+      startMarker = endMarker = routeLine = movingMarker = null;
+    }
+    if (start && end) {
+      const distance = routeDistanceKm(start, end);
+      routeInfo.textContent = distance > 200
+        ? `直線距離約 ${distance.toFixed(2)} 公里，超過單次 200 公里的限制。`
+        : `直線距離約 ${distance.toFixed(2)} 公里，20 km/h 預計約 ${(distance * 3).toFixed(1)} 分鐘。`;
+    } else {
+      routeInfo.textContent = '依序點地圖選起點、終點 · 直線約 20 km/h · 最長 200 公里';
+    }
+  }
+  document.getElementById('pickStart').addEventListener('click', () => {
+    pickMode = 'start'; mapNote.textContent = '請點地圖選起點，接著點終點。';
+  });
+  document.getElementById('pickEnd').addEventListener('click', () => {
+    pickMode = 'end'; mapNote.textContent = '請在地圖點選終點。';
+  });
+
+  function setMode(next) {
+    mode = next;
+    const moving = next === 'move';
+    document.getElementById('singleMode').hidden = moving;
+    document.getElementById('singleActions').hidden = moving;
+    document.getElementById('routeMode').hidden = !moving;
+    singleTab.classList.toggle('active', !moving);
+    routeTab.classList.toggle('active', moving);
+    singleTab.setAttribute('aria-selected', String(!moving));
+    routeTab.setAttribute('aria-selected', String(moving));
+    pickMode = moving && !routePoints.start ? 'start' : null;
+    mapNote.textContent = moving
+      ? pickMode ? '請點地圖選起點，接著點終點。' : '按「選起點／選終點」可重新選擇。'
+      : '點地圖選位置，或在上方輸入座標。';
+    if (!map) mapNote.textContent = moving
+      ? '地圖無法載入，請檢查網路連線後重新整理頁面，才能選移動路徑。'
+      : '地圖無法載入；仍可直接輸入經緯度設定單點定位。';
+    if (map && marker) {
+      map.removeLayer(marker);
+      marker = null;
+    }
+    updateRoutePreview();
+    if (!moving) updateMarker(false);
+    if (map) map.invalidateSize();
+  }
+  singleTab.addEventListener('click', () => setMode('single'));
+  routeTab.addEventListener('click', () => setMode('move'));
+
+  function updateMarker(center) {
+    const point = coordinates();
+    if (!map || !point) return;
+    if (marker) marker.setLatLng(point);
+    else marker = L.marker(point).addTo(map);
+    if (center) map.setView(point, Math.max(map.getZoom(), 12));
+  }
+  for (const field of [lat, lon]) field.addEventListener('change', () => updateMarker(true));
+
+  let serviceClosed = false, commandPending = false;
+  const stopMoveButton = document.querySelector('[data-action="stop_move"]');
+  stopMoveButton.disabled = true;
+  async function pollMovement() {
+    if (serviceClosed) return;
+    try {
+      const response = await fetch('/api/state', {cache: 'no-store'});
+      if (!response.ok) return;
+      const state = await response.json();
+      if (!commandPending) stopMoveButton.disabled = state.phase === 'idle';
+      if (state.phase === 'idle') {
+        routeTab.textContent = '移動路徑';
+        if (map && movingMarker) { map.removeLayer(movingMarker); movingMarker = null; }
+        return;
+      }
+      if (!routePoint('start') && !routePoint('end') && state.start && state.end) {
+        routePoints.start = state.start;
+        routePoints.end = state.end;
+        updateRoutePreview();
+      }
+      routeTab.textContent = state.phase === 'moving' ? '移動路徑 · 移動中' : '移動路徑';
+      if (map && mode === 'move') {
+        const point = [state.lat, state.lon];
+        if (movingMarker) movingMarker.setLatLng(point);
+        else movingMarker = L.circleMarker(point, {radius: 9, color: '#e38600', fillColor: '#ffb020', fillOpacity: 1}).addTo(map);
+      }
+      const remaining = Math.ceil(state.remaining_seconds / 60);
+      routeProgress.textContent = state.phase === 'failed'
+        ? `移動中斷：${state.message || '定位指令已結束'}`
+        : state.phase === 'complete'
+          ? '已到達終點。按「停止移動」可固定在終點。'
+          : `移動中：${state.progress}% · 約剩 ${remaining} 分鐘 · 目前 ${state.lat}, ${state.lon}`;
+    } catch (error) {
+      routeProgress.textContent = '無法取得移動進度，請確認控制台服務仍在執行。';
+    }
+  }
+  setInterval(pollMovement, 2000);
+  pollMovement();
+
+  async function run(action) {
+    const point = coordinates();
+    if (action === 'set' && !point) {
+      status.textContent = '座標無效：請輸入範圍內的緯度與經度';
+      return;
+    }
+    const start = routePoint('start'), end = routePoint('end');
+    if (action === 'move' && (!start || !end || routeDistanceKm(start, end) > 200 || routeDistanceKm(start, end) < 0.001)) {
+      status.textContent = '路線無效：請確認起終點座標與 200 公里限制';
+      return;
+    }
+    commandPending = true;
+    document.querySelectorAll('button').forEach(button => button.disabled = true);
+    status.textContent = '正在執行…';
+    result.textContent = '請確認 USB 已連線，裝置已解鎖。';
+    const started = Date.now();
+    const progress = setInterval(() => {
+      status.textContent = `正在執行…（已等待 ${Math.floor((Date.now() - started) / 1000)} 秒）`;
+    }, 1000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 40000);
+    let closed = false;
+    try {
+      const response = await fetch('/api/run', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action, lat: point?.[0], lon: point?.[1],
+          startLat: start?.[0], startLon: start?.[1], endLat: end?.[0], endLon: end?.[1]}),
+        signal: controller.signal
+      });
+      const data = await response.json();
+      closed = action === 'shutdown' && data.ok;
+      serviceClosed = closed;
+      status.textContent = closed ? '✓ 控制台已關閉'
+        : data.ok && action === 'move' ? '✓ 移動程序已啟動'
+        : data.ok && action === 'stop_move' ? '✓ 已停止移動'
+        : data.ok ? '✓ 指令執行成功' : '✗ 指令未完成';
+      result.textContent = data.message;
+      if (action === 'stop_move' && data.ok) routeProgress.textContent = data.message;
+    } catch (error) {
+      status.textContent = '✗ 控制台沒有回應';
+      result.textContent = error.name === 'AbortError'
+        ? '等待超過 40 秒。請關閉舊控制台視窗，重新執行 start.bat；也請關閉其他正在執行定位指令的終端機。'
+        : String(error);
+    } finally {
+      commandPending = false;
+      clearInterval(progress);
+      clearTimeout(timeout);
+      if (!closed) {
+        document.querySelectorAll('button').forEach(button => button.disabled = false);
+        pollMovement();
+      }
+    }
+  }
+  document.getElementById('set').addEventListener('click', () => run('set'));
+  document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => run(button.dataset.action)));
+</script>
+</body>
+</html>
