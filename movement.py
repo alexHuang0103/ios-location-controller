@@ -7,8 +7,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 EARTH_RADIUS_M = 6_371_000
-SPEED_KMH = 20
-STEP_SECONDS = 5
+SPEED_KMH = 19.5
+STEP_SECONDS = 0.5
 MAX_DISTANCE_M = 200_000
 
 

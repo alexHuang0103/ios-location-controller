@@ -15,10 +15,14 @@ from movement import create_gpx, interpolate
 HOST = '127.0.0.1'
 PORT = 8765
 COMMAND_TIMEOUT = 30
+CLEAR_TIMEOUT = 90
 ROOT = Path(__file__).resolve().parent
 LOCK = threading.Lock()
 ACTIVE_PROCESS = None
 ROUTE = None
+PINNED_POINT = None
+PINNED_ERROR = ''
+RETRY_AT = 0
 PROMPT = b'Press ENTER to exit>'
 COMMANDS = {
     'devices': ['usbmux', 'list'],
@@ -89,8 +93,8 @@ def launch_location_command(args):
     return process, output, ready, first_update, first_point_time
 
 
-def set_location(args):
-    global ACTIVE_PROCESS
+def set_location(args, point=None):
+    global ACTIVE_PROCESS, PINNED_POINT, PINNED_ERROR, RETRY_AT
     stop_active_process()
     process, output, ready, _, _ = launch_location_command(args)
     if not ready.wait(timeout=COMMAND_TIMEOUT):
@@ -108,19 +112,23 @@ def set_location(args):
     message = output.decode('utf-8', errors='replace').strip()
     if process.poll() is None and PROMPT in output:
         ACTIVE_PROCESS = process
+        PINNED_POINT = point
+        PINNED_ERROR = ''
+        RETRY_AT = 0
         return {'ok': True, 'message': '定位已設定。請保留控制台視窗開啟；改位置或恢復真實定位時會自動結束前一個定位程序。'}
     process.wait(timeout=5)
-    return {'ok': process.returncode == 0,
-            'message': message[-7500:] or ('已完成' if process.returncode == 0 else '指令失敗')}
+    return {'ok': False, 'message': message[-7500:] or '定位程序已結束，無法持續維持模擬位置。'}
 
 
 def start_movement(start, end):
-    global ACTIVE_PROCESS, ROUTE
+    global ACTIVE_PROCESS, ROUTE, PINNED_POINT, PINNED_ERROR
     try:
         path, distance, duration = create_gpx(start, end)
     except ValueError as exc:
         return {'ok': False, 'message': str(exc)}
     stop_active_process()
+    PINNED_POINT = None
+    PINNED_ERROR = ''
     try:
         process, output, ready, first_update, first_point_time = launch_location_command(
             ['developer', 'dvt', 'simulate-location', 'play', str(path)])
@@ -153,6 +161,12 @@ def movement_status():
     route = ROUTE
     process = ACTIVE_PROCESS
     if route is None or process is None:
+        if PINNED_POINT is not None:
+            phase = 'fixed' if process is not None and process.poll() is None else 'reconnecting'
+            return {'phase': phase, 'lat': PINNED_POINT[0], 'lon': PINNED_POINT[1],
+                    'message': PINNED_ERROR}
+        if PINNED_ERROR:
+            return {'phase': 'failed', 'message': PINNED_ERROR}
         return {'phase': 'idle'}
     elapsed = max(0, time.monotonic() - route['started'])
     fraction = min(1, elapsed / route['duration'])
@@ -183,10 +197,42 @@ def stop_movement():
         return {'ok': False, 'message': '移動程序已中斷，無法確認最後位置。請重新設定單點定位。'}
     args = ['developer', 'dvt', 'simulate-location', 'set', '--',
             str(position['lat']), str(position['lon'])]
-    response = set_location(args)
+    response = set_location(args, (position['lat'], position['lon']))
     if response['ok']:
         response['message'] = f"已停止移動並停在 {position['lat']}, {position['lon']}。"
     return response
+
+
+def maintain_location():
+    """Repair an ended DVT session and pin a finished route at its final point."""
+    global PINNED_POINT, PINNED_ERROR, RETRY_AT
+    while True:
+        time.sleep(2)
+        if not LOCK.acquire(blocking=False):
+            continue
+        try:
+            if ROUTE is not None and ACTIVE_PROCESS is not None and PROMPT in ROUTE['output']:
+                end = ROUTE['end']
+                response = set_location(['developer', 'dvt', 'simulate-location', 'set', '--',
+                                         str(end[0]), str(end[1])], end)
+                if not response['ok']:
+                    PINNED_POINT = end
+                    PINNED_ERROR = '已到終點，但固定終點失敗：' + response['message']
+                    RETRY_AT = time.monotonic() + 20
+            elif PINNED_POINT is not None and (ACTIVE_PROCESS is None or ACTIVE_PROCESS.poll() is not None):
+                if time.monotonic() >= RETRY_AT:
+                    point = PINNED_POINT
+                    response = set_location(['developer', 'dvt', 'simulate-location', 'set', '--',
+                                             str(point[0]), str(point[1])], point)
+                    if not response['ok']:
+                        PINNED_POINT = point
+                        PINNED_ERROR = '定位連線中斷，重新連線失敗：' + response['message']
+                        RETRY_AT = time.monotonic() + 20
+        except Exception as exc:
+            PINNED_ERROR = f'定位維持失敗：{exc}'
+            RETRY_AT = time.monotonic() + 20
+        finally:
+            LOCK.release()
 
 class Handler(BaseHTTPRequestHandler):
     def send_data(self, status, content, content_type='application/json; charset=utf-8'):
@@ -208,6 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_data(404, json.dumps({'error':'找不到頁面'}))
 
     def do_POST(self):
+        global PINNED_POINT, PINNED_ERROR
         if self.path != '/api/run':
             return self.send_data(404, json.dumps({'error':'找不到 API'}))
         try:
@@ -242,30 +289,42 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_data(409, json.dumps({'ok':False,'message':'另一個指令正在執行'},ensure_ascii=False))
         try:
             if action == 'shutdown':
+                PINNED_POINT = None
+                PINNED_ERROR = ''
                 stop_active_process()
                 response = {'ok': True, 'message': '控制台已關閉，定位程序也已結束。下次使用請重新執行 start.bat。'}
             elif action == 'set':
-                response = set_location(args)
+                PINNED_POINT = None
+                PINNED_ERROR = ''
+                response = set_location(args, (lat, lon))
             elif action == 'move':
                 response = start_movement(start, end)
             elif action == 'stop_move':
                 response = stop_movement()
             else:
                 if action == 'clear':
+                    PINNED_POINT = None
+                    PINNED_ERROR = ''
                     stop_active_process()
                 command = [sys.executable, '-m', 'pymobiledevice3', *args]
                 result = subprocess.run(command, capture_output=True, text=True,
-                                        timeout=COMMAND_TIMEOUT, errors='replace')
+                                        timeout=CLEAR_TIMEOUT if action == 'clear' else COMMAND_TIMEOUT,
+                                        errors='replace')
                 output = (result.stdout + '\n' + result.stderr).strip()
                 response = {'ok': result.returncode == 0,
-                            'message': output[-7500:] or ('已完成' if result.returncode == 0 else '指令失敗')}
+                            'message': ('已送出恢復真實定位指令。' if action == 'clear' and result.returncode == 0
+                                        else output[-7500:] or ('已完成' if result.returncode == 0 else '指令失敗'))}
             self.send_data(200, json.dumps(response,ensure_ascii=False))
             if action == 'shutdown':
                 timer = threading.Timer(0.2, self.server.shutdown)
                 timer.daemon = True
                 timer.start()
-        except subprocess.TimeoutExpired:
-            self.send_data(200,json.dumps({'ok':False,'message':f'執行超過 {COMMAND_TIMEOUT} 秒。請確認 USB 連線及開發者服務。'},ensure_ascii=False))
+        except subprocess.TimeoutExpired as exc:
+            details = b'\n'.join(part for part in (exc.stdout, exc.stderr) if isinstance(part, bytes))
+            message = '指令逾時。請確認 USB 連線、裝置已解鎖，然後重試。套件警告不是定位成功的訊號。'
+            if details:
+                message += '\n\n指令輸出：\n' + details.decode('utf-8', errors='replace')[-3000:]
+            self.send_data(200, json.dumps({'ok': False, 'message': message}, ensure_ascii=False))
         except Exception as exc:
             self.send_data(500,json.dumps({'ok':False,'message':str(exc)},ensure_ascii=False))
         finally:
@@ -293,6 +352,7 @@ if __name__ == '__main__':
         sys.exit(2 if exc.errno in (errno.EADDRINUSE, 10048) else 1)
     print(f'本機 GPS 控制頁面：http://{HOST}:{PORT}')
     print('保留此視窗開啟即可操作。按 Ctrl+C 結束。')
+    threading.Thread(target=maintain_location, daemon=True).start()
     threading.Timer(0.8,lambda: webbrowser.open(f'http://{HOST}:{PORT}')).start()
     try:
         server.serve_forever()

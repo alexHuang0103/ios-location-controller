@@ -15,7 +15,8 @@
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
     button{font:inherit;cursor:pointer;padding:12px 16px;border-radius:9px;border:1px solid #cdd6e0;background:white;font-weight:600}
     button.primary{background:#1967d2;border-color:#1967d2;color:white}button:disabled{opacity:.5;cursor:wait}
-    #map{width:100%;height:auto;aspect-ratio:16 / 9;margin-top:14px;border:1px solid #cdd6e0;border-radius:9px;background:#e9eef3}
+    .map-wrap{position:relative;margin-top:14px}#map{width:100%;height:auto;aspect-ratio:16 / 9;border:1px solid #cdd6e0;border-radius:9px;background:#e9eef3}
+    .locate-button{position:absolute;z-index:500;right:12px;top:12px;padding:9px 12px;background:white;box-shadow:0 2px 8px #1c2d4030;font-size:14px}
     #map-note{margin:8px 0 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f8;border-radius:9px;padding:14px;font-size:12px;max-height:280px;overflow:auto}
     [hidden]{display:none!important}.mode-switch{display:flex;gap:6px;padding:5px;border-radius:11px;background:#eef2f7;margin-bottom:16px}
     .mode-switch button{flex:1;border:0;background:transparent;padding:10px}.mode-switch button.active{background:white;color:#1967d2;box-shadow:0 1px 5px #1c2d4020}
@@ -40,8 +41,9 @@
       <div><label for="lat">緯度（Latitude）</label><input id="lat" type="number" step="any" min="-90" max="90" placeholder="例如 25.0330"></div>
       <div><label for="lon">經度（Longitude）</label><input id="lon" type="number" step="any" min="-180" max="180" placeholder="例如 121.5654"></div>
     </div>
-    <div id="map" role="region" aria-label="選擇定位的地圖"></div>
+    <div class="map-wrap"><div id="map" role="region" aria-label="選擇定位的地圖"></div><button id="locate" class="locate-button" type="button" title="返回此瀏覽器的目前位置">⌖ 返回目前位置</button></div>
     <p id="map-note" class="small">點地圖選位置，或在上方輸入座標。</p>
+    <p id="geoStatus" class="small">藍點顯示此電腦瀏覽器取得的位置；需允許位置權限，且可能只有約略位置。</p>
     <div id="singleActions" class="actions"><button class="primary" id="set">設定定位</button><button data-action="clear">恢復真實定位</button></div>
     <div id="routeMode" role="tabpanel" hidden>
       <div class="route-points">
@@ -56,7 +58,7 @@
     <pre id="result">先連接並解鎖 iPhone／iPad，確認已信任這部電腦。</pre>
     <details class="more"><summary>更多操作與說明</summary>
       <div class="actions"><button data-action="devices">檢查 USB 裝置</button><button data-action="shutdown">關閉控制台</button></div>
-      <p class="small">設定定位期間請保留控制台執行。若其他終端機仍在執行定位指令，請先在那裡按 Enter 結束。地圖底圖需要網路；定位指令只送到本機服務。</p>
+      <p class="small">設定定位期間請保留控制台執行。若其他終端機仍在執行定位指令，請先在那裡按 Enter 結束。藍點來自開啟控制台的瀏覽器，並非裝置未模擬前的真實 GPS；地圖底圖需要網路。</p>
     </details>
   </section>
 </main>
@@ -67,6 +69,7 @@
   const status = document.getElementById('status');
   const result = document.getElementById('result');
   const mapNote = document.getElementById('map-note');
+  const geoStatus = document.getElementById('geoStatus');
   const routeInfo = document.getElementById('routeInfo');
   const routeProgress = document.getElementById('routeProgress');
   const singleTab = document.getElementById('singleTab');
@@ -93,7 +96,7 @@
     return 12742 * Math.asin(Math.min(1, Math.sqrt(h)));
   }
 
-  let map, marker, routeLine, startMarker, endMarker, movingMarker, pickMode = null;
+  let map, marker, routeLine, startMarker, endMarker, movingMarker, currentMarker, accuracyCircle, currentPoint, pickMode = null;
   if (window.L) {
     map = L.map('map').setView([23.7, 121], 7);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -117,6 +120,35 @@
   } else {
     mapNote.textContent = '地圖無法載入，請檢查網路連線；仍可直接輸入經緯度設定定位。';
   }
+
+  function showCurrentPosition(position) {
+    currentPoint = [position.coords.latitude, position.coords.longitude];
+    if (map) {
+      if (currentMarker) currentMarker.setLatLng(currentPoint);
+      else currentMarker = L.circleMarker(currentPoint, {radius: 8, color: '#fff', weight: 3, fillColor: '#1877e7', fillOpacity: 1})
+        .bindTooltip('此瀏覽器的目前位置').addTo(map);
+      if (accuracyCircle) accuracyCircle.setLatLng(currentPoint).setRadius(position.coords.accuracy);
+      else accuracyCircle = L.circle(currentPoint, {radius: position.coords.accuracy, color: '#1877e7', weight: 1, fillOpacity: 0.08, interactive: false}).addTo(map);
+      currentMarker.bringToFront();
+    }
+    geoStatus.textContent = `藍點：此瀏覽器的目前位置（精確度約 ${Math.round(position.coords.accuracy)} 公尺）。`;
+  }
+  function locationError(error) {
+    geoStatus.textContent = error.code === 1
+      ? '瀏覽器未取得位置權限。允許位置權限後再按「返回目前位置」。'
+      : '目前無法取得此瀏覽器的位置。仍可點地圖或輸入座標。';
+  }
+  const geoOptions = {enableHighAccuracy: true, maximumAge: 10000, timeout: 15000};
+  if (navigator.geolocation) navigator.geolocation.watchPosition(showCurrentPosition, locationError, geoOptions);
+  else geoStatus.textContent = '此瀏覽器不支援取得目前位置。';
+  document.getElementById('locate').addEventListener('click', event => {
+    event.stopPropagation();
+    if (currentPoint && map) map.setView(currentPoint, Math.max(map.getZoom(), 15));
+    else if (navigator.geolocation) navigator.geolocation.getCurrentPosition(position => {
+      showCurrentPosition(position);
+      if (map) map.setView(currentPoint, Math.max(map.getZoom(), 15));
+    }, locationError, geoOptions);
+  });
 
   function updateRoutePreview() {
     const start = routePoint('start'), end = routePoint('end');
@@ -144,7 +176,7 @@
       const distance = routeDistanceKm(start, end);
       routeInfo.textContent = distance > 200
         ? `直線距離約 ${distance.toFixed(2)} 公里，超過單次 200 公里的限制。`
-        : `直線距離約 ${distance.toFixed(2)} 公里，20 km/h 預計約 ${(distance * 3).toFixed(1)} 分鐘。`;
+        : `直線距離約 ${distance.toFixed(2)} 公里，約 20 km/h，預計約 ${(distance * 60 / 19.5).toFixed(1)} 分鐘。`;
     } else {
       routeInfo.textContent = '依序點地圖選起點、終點 · 直線約 20 km/h · 最長 200 公里';
     }
@@ -202,10 +234,26 @@
       const response = await fetch('/api/state', {cache: 'no-store'});
       if (!response.ok) return;
       const state = await response.json();
-      if (!commandPending) stopMoveButton.disabled = state.phase === 'idle';
+      if (!commandPending) stopMoveButton.disabled = state.phase !== 'moving' && state.phase !== 'complete';
       if (state.phase === 'idle') {
         routeTab.textContent = '移動路徑';
         if (map && movingMarker) { map.removeLayer(movingMarker); movingMarker = null; }
+        return;
+      }
+      if (state.phase === 'fixed' || state.phase === 'reconnecting') {
+        routeTab.textContent = '移動路徑';
+        if (state.phase === 'reconnecting') {
+          if (!commandPending) status.textContent = '⚠ 定位連線中斷，正在重新連線…';
+          routeProgress.textContent = state.message || '定位連線中斷，正在重新連線…';
+        } else {
+          if (!commandPending) status.textContent = '✓ 定位維持中';
+          if (mode === 'move') routeProgress.textContent = `已固定在 ${state.lat}, ${state.lon}。`;
+        }
+        return;
+      }
+      if (state.phase === 'failed') {
+        if (!commandPending) status.textContent = '✗ 定位連線失敗';
+        routeProgress.textContent = state.message || '定位連線失敗。';
         return;
       }
       if (!routePoint('start') && !routePoint('end') && state.start && state.end) {
@@ -252,7 +300,7 @@
       status.textContent = `正在執行…（已等待 ${Math.floor((Date.now() - started) / 1000)} 秒）`;
     }, 1000);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 40000);
+    const timeout = setTimeout(() => controller.abort(), action === 'clear' ? 105000 : 40000);
     let closed = false;
     try {
       const response = await fetch('/api/run', {
